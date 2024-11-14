@@ -1,0 +1,208 @@
+#! /usr/bin/env bash
+
+set -o errexit
+
+# Check if running as root or sudo
+if [ $(id -u) -ne 0 ]
+then
+  echo "Please run this script as root or using sudo"
+  exit 0
+fi
+
+THEME_DIR_NAME="${TMPL_THEME_DIR_NAME}"
+RESOLUTION="${TMPL_RESOLUTION}"
+DIST_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+CANCEL_INSTALLATION="Cancel installation"
+DO_NOTHING="Do nothing"
+PS3="Enter selection number: "
+
+# Secure boot warning message
+echo ""
+echo "Warning:"
+echo "If you use secure boot, this theme will not look correctly"
+echo "This is due to custom fonts not signed, thus they will be ignored by GRUB"
+echo "You either need to disable secure boot"
+echo "Or re-sign your GRUB package with own keys and enroll them to your EFI"
+echo "See this post for details: https://bbs.archlinux.org/viewtopic.php?pid=2103579#p2103579"
+echo ""
+read -p "Press enter to continue"
+
+# Confirm GRUB resolution change
+CONFIRM_RESOLUTION_CHANGE="OK to set GRUB_GFXMODE to $RESOLUTION"
+echo ""
+echo "This theme requires GRUB_GFXMODE to exactly match theme resolution"
+select confirm_resolution in "$CONFIRM_RESOLUTION_CHANGE" "$CANCEL_INSTALLATION"
+do
+  case "$confirm_resolution" in
+    $CONFIRM_RESOLUTION_CHANGE)
+      break
+    ;;
+    $CANCEL_INSTALLATION*)
+      exit 0
+    ;;
+  esac
+done
+
+# Choose installation folder
+LOCATION_BOOT="/boot/grub/themes"
+LOCATION_USR="/usr/share/grub/themes"
+echo ""
+echo "Choose install location:"
+select install_location in $LOCATION_BOOT $LOCATION_USR "$CANCEL_INSTALLATION"
+do
+  case "$install_location" in
+    $LOCATION_BOOT | $LOCATION_USR)
+      break
+    ;;
+    $CANCEL_INSTALLATION*)
+      exit 0
+    ;;
+  esac
+done
+
+# Ask whether we disable memtest
+DISABLE_MEMTEST="Set GRUB_DISABLE_MEMTEST=true (recommended)"
+echo ""
+echo "This theme doesnt come with screen for memtest entry, it is recommended to disable it"
+select disable_memtest_choice in "$DISABLE_MEMTEST" "$DO_NOTHING" "$CANCEL_INSTALLATION"
+do
+  case "$disable_memtest_choice" in
+    $DISABLE_MEMTEST | $DO_NOTHING)
+      break
+    ;;
+    $CANCEL_INSTALLATION*)
+      exit 0
+    ;;
+  esac
+done
+
+# Confirm to patch 10_linux
+PATCH_10_LINUX="Patch /etc/grub.d/10_linux (recommended)"
+echo ""
+echo "This theme has special screen for 'Advanced options' submenu"
+echo "It is recommended to patch /etc/grub.d/10_linux to set --class for 'submenu' entry"
+echo "If not patched, this option will use generic screen"
+select patch_10_linux_choice in "$PATCH_10_LINUX" "$DO_NOTHING" "$CANCEL_INSTALLATION"
+do
+  case "$patch_10_linux_choice" in
+    $PATCH_10_LINUX | $DO_NOTHING)
+      break
+    ;;
+    $CANCEL_INSTALLATION*)
+      exit 0
+    ;;
+  esac
+done
+
+# Confirm to patch 30_uefi-firmware
+PATCH_30_UEFI="Patch /etc/grub.d/30_uefi-firmware (recommended)"
+echo ""
+echo "This theme has special screen for EFI entry"
+echo "It is recommended to patch /etc/grub.d/30_uefi-firmware to set --class for 'EFI' entry"
+echo "If not patched, this option will use generic screen"
+select patch_30_uefi_choice in "$PATCH_30_UEFI" "$DO_NOTHING" "$CANCEL_INSTALLATION"
+do
+  case "$patch_30_uefi_choice" in
+    $PATCH_30_UEFI | $DO_NOTHING)
+      break
+    ;;
+    $CANCEL_INSTALLATION*)
+      exit 0
+    ;;
+  esac
+done
+
+# Back up files to be modified
+echo ""
+if [[ ! -f /etc/default/grub.wintux.bak ]]
+then
+  echo "Backing up /etc/default/grub"
+  cp -an /etc/default/grub /etc/default/grub.wintux.bak
+else
+  echo "/etc/default/grub.wintux.bak already exists"
+fi
+if [[ ${patch_10_linux_choice} == ${PATCH_10_LINUX} ]]
+then
+  if [[ ! -f /etc/grub.d/wintux-backup/10_linux ]]
+  then
+    echo "Backing up /etc/grub.d/10_linux"
+    mkdir -p /etc/grub.d/wintux-backup
+    cp -an /etc/grub.d/10_linux /etc/grub.d/wintux-backup/10_linux
+  else
+    echo "/etc/grub.d/wintux-backup/10_linux already exists"
+  fi
+fi
+if [[ ${patch_30_uefi_choice} == ${PATCH_30_UEFI} ]]
+then
+  if [[ ! -f /etc/grub.d/wintux-backup/30_uefi-firmware ]]
+  then
+    echo "Backing up /etc/grub.d/30_uefi-firmware"
+    mkdir -p /etc/grub.d/wintux-backup
+    cp -an /etc/grub.d/30_uefi-firmware /etc/grub.d/wintux-backup/30_uefi-firmware
+  else
+    echo "/etc/grub.d/wintux-backup/30_uefi-firmware already exists"
+  fi
+fi
+
+# Copy theme
+echo "Copying theme to $install_location"
+mkdir -p "$install_location"
+cp -ar --no-preserve=ownership "$DIST_DIR"/"$THEME_DIR_NAME" "$install_location"
+
+# Patch /etc/default/grub
+echo 'Patching /etc/default/grub'
+
+if grep -q "^GRUB_GFXMODE=" /etc/default/grub
+then
+  sed -i "s|^GRUB_GFXMODE=.*|GRUB_GFXMODE=\""$RESOLUTION"\"|" /etc/default/grub
+else
+  echo "" >> /etc/default/grub
+  echo "GRUB_GFXMODE=\"$RESOLUTION\"" >> /etc/default/grub
+fi
+
+THEME_TXT="$install_location"/"$THEME_DIR_NAME"/theme.txt
+if grep -q "^GRUB_THEME=" /etc/default/grub
+then
+  ESCAPED_THEME_TXT=$(echo "$THEME_TXT" | sed 's|\/|\\\/|g')
+  sed -i "s|^GRUB_THEME=.*|GRUB_THEME=\"$ESCAPED_THEME_TXT\"|" /etc/default/grub
+else
+  echo "" >> /etc/default/grub
+  echo "GRUB_THEME=\"$THEME_TXT\"" >> /etc/default/grub
+fi
+
+if [[ ${disable_memtest_choice} == ${DISABLE_MEMTEST} ]]
+then
+  if grep -q "^GRUB_DISABLE_MEMTEST=" /etc/default/grub
+  then
+    sed -i "s|^GRUB_DISABLE_MEMTEST=.*|GRUB_DISABLE_MEMTEST=true|" /etc/default/grub
+  else
+    echo "" >> /etc/default/grub
+    echo "GRUB_DISABLE_MEMTEST=true" >> /etc/default/grub
+  fi
+fi
+
+# Patch 10_linux
+if [[ ${patch_10_linux_choice} == ${PATCH_10_LINUX} ]]
+then
+  echo 'Patching /etc/grub.d/10_linux'
+  if ! grep -q '^SUBMENU_CLASS="--class gnu-linux-adv"' /etc/grub.d/10_linux
+  then
+sed -i '/CLASS="--class gnu-linux --class gnu --class os"/ a\
+SUBMENU_CLASS="--class gnu-linux-adv"
+' /etc/grub.d/10_linux
+  fi
+  sed -i 's|\(echo "submenu '"'"'$(.*)'"'"' \).*\(\\$menuentry_id_option.*\)|\1${SUBMENU_CLASS} \2|' /etc/grub.d/10_linux
+fi
+
+# Patch 30_uefi-firmware
+if [[ ${patch_30_uefi_choice} == ${PATCH_30_UEFI} ]]
+then
+  echo 'Patching /etc/grub.d/30_uefi-firmware'
+  sed -i 's|\(menuentry '"'"'$LABEL'"'"' \).*\(\\$menuentry_id_option.*\)|\1--class efi \2|' /etc/grub.d/30_uefi-firmware
+fi
+
+# update-grub
+echo "Running update-grub"
+update-grub
+
+echo "OK"
